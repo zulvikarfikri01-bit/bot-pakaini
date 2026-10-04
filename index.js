@@ -6,24 +6,28 @@ import makeWASocket, {
   downloadMediaMessage
 } from "@whiskeysockets/baileys";
 import pino from "pino";
-import qrcode from "qrcode-terminal";
+import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
+
+// Muat konfigurasi environment jika ada
+dotenv.config();
 
 // ===================================================
 // KONFIGURASI BOT & ADMIN
 // ===================================================
-const BOT_NAME = "PAKAINI STORE";
-const ADMIN_CONTACT = "6285143253217";
+const BOT_NAME = process.env.BOT_NAME || "PAKAINI STORE";
+const ADMIN_CONTACT = process.env.ADMIN_CONTACT || "6285143253217";
 const ADMIN_JID = `${ADMIN_CONTACT}@s.whatsapp.net`;
-const EWALLET_NUMBER = "085143253217";
-const ACCOUNT_NAME = "KH***S FEB*******H FAD*****AH";
+const EWALLET_NUMBER = process.env.EWALLET_NUMBER || "085143253217";
+const ACCOUNT_NAME = process.env.ACCOUNT_NAME || "KH***S FEB*******H FAD*****AH";
 
-// Nomor WhatsApp bot untuk login via Pairing Code (format internasional tanpa tanda +, contoh: 6285143253217)
-const BOT_PHONE_NUMBER = "6285143253217"; 
+// Nomor WhatsApp bot untuk login via Pairing Code (format internasional bersih tanpa tanda +, contoh: 6285143253217)
+const RAW_BOT_PHONE = process.env.BOT_PHONE_NUMBER || "6285143253217";
+const BOT_PHONE_NUMBER = RAW_BOT_PHONE.replace(/[^0-9]/g, "");
 
 // ID Grup Notifikasi Admin
-let NOTIF_GROUP_ID = "120363430688539207@g.us"; 
+let NOTIF_GROUP_ID = process.env.NOTIF_GROUP_ID || "120363430688539207@g.us"; 
 
 // Penyimpanan pesanan sementara per user
 const activeOrders = new Map();
@@ -65,68 +69,36 @@ async function startBot() {
     auth: state,
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
-    browser: Browsers.windows("Desktop"),
+    browser: Browsers.ubuntu("Chrome"),
     syncFullHistory: false
   });
 
   currentSock = sock;
 
-  // JIKA BELUM LOGIN, GUNAKAN PAIRING CODE BUKAN QR CODE
-  if (BOT_PHONE_NUMBER && !sock.authState.creds.registered) {
+  // JIKA BELUM LOGIN, GUNAKAN PAIRING CODE (BERIKAN JEDA 5 DETIK AGAR KONEKSI SOCKET SIAP)
+  if (!sock.authState.creds.registered) {
+    console.log(`\n⏳ Menunggu inisialisasi socket (5 detik) sebelum generate pairing code...`);
     setTimeout(async () => {
       try {
-        const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-        console.log(`\n=========================================`);
-        console.log(`🔑 KODE PAIRING WHATSAPP ANDA: ${code}`);
-        console.log(`=========================================\n`);
+        const cleanNumber = BOT_PHONE_NUMBER.replace(/[^0-9]/g, "");
+        console.log(`📡 Meminta kode pairing untuk nomor: +${cleanNumber}...`);
+        const code = await sock.requestPairingCode(cleanNumber);
+        console.log("\n=========================================");
+        console.log(`🔑 KODE PAIRING WHATSAPP: ${code}`);
+        console.log("=========================================\n");
       } catch (err) {
-        console.error("Gagal meminta kode pairing:", err);
+        console.error("❌ Gagal generate pairing code:", err);
       }
-    }, 4000); // Beri jeda 4 detik agar koneksi siap
+    }, 5000);
   }
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    const { connection, lastDisconnect } = update;
 
-    // Tampilkan QR code jika pairing code tidak disetel
-    if (qr && !BOT_PHONE_NUMBER) {
-      console.log("\n[SCAN QR CODE INI MENGGUNAKAN WHATSAPP]\n");
-      qrcode.generate(qr, { small: true });
-    }
-
-    if (connection === "close") {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-      const isReplaced = statusCode === DisconnectReason.connectionReplaced;
-
-      console.log(`Koneksi terputus (Status: ${statusCode}).`);
-
-      sock.ev.removeAllListeners();
-
-      if (isReplaced) {
-        console.log("⚠️ Sesi digantikan oleh perangkat/proses lain. Tidak menyambung ulang otomatis untuk menghindari konflik.");
-        return;
-      }
-
-      if (isLoggedOut) {
-        console.log("Sesi telah keluar/expired. Menghapus session lama untuk scan QR baru...");
-        try {
-          fs.rmSync("session_auth", { recursive: true, force: true });
-        } catch (e) {}
-        setTimeout(() => {
-          isReconnecting = false;
-          startBot();
-        }, 2000);
-      } else {
-        console.log("Mencoba menyambung kembali dalam 3 detik...");
-        isReconnecting = true;
-        setTimeout(() => {
-          isReconnecting = false;
-          startBot();
-        }, 3000);
-      }
+    if (connection === "connecting") {
+      console.log("🔄 Menghubungkan ke server WhatsApp...");
     } else if (connection === "open") {
       isReconnecting = false;
       console.log(`\n==================================================`);
@@ -152,6 +124,37 @@ async function startBot() {
         }
       } catch (err) {
         console.error("Gagal mengambil daftar grup:", err);
+      }
+    } else if (connection === "close") {
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+      const isReplaced = statusCode === DisconnectReason.connectionReplaced;
+
+      console.log(`❌ Koneksi terputus (Status Code: ${statusCode}).`);
+
+      sock.ev.removeAllListeners();
+
+      if (isReplaced) {
+        console.log("⚠️ Sesi digantikan oleh perangkat/proses lain. Tidak menyambung ulang otomatis untuk menghindari konflik.");
+        return;
+      }
+
+      if (isLoggedOut) {
+        console.log("⚠️ Sesi telah keluar / logout. Menghapus folder session lama untuk login ulang...");
+        try {
+          fs.rmSync("session_auth", { recursive: true, force: true });
+        } catch (e) {}
+        setTimeout(() => {
+          isReconnecting = false;
+          startBot();
+        }, 2000);
+      } else {
+        console.log("🔄 Mencoba menyambung kembali dalam 3 detik...");
+        isReconnecting = true;
+        setTimeout(() => {
+          isReconnecting = false;
+          startBot();
+        }, 3000);
       }
     }
   });
