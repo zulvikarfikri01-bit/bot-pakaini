@@ -19,6 +19,9 @@ const ADMIN_JID = `${ADMIN_CONTACT}@s.whatsapp.net`;
 const EWALLET_NUMBER = "085143253217";
 const ACCOUNT_NAME = "KH***S FEB*******H FAD*****AH";
 
+// Nomor WhatsApp bot untuk login via Pairing Code (format internasional tanpa tanda +, contoh: 6285143253217)
+const BOT_PHONE_NUMBER = "6285143253217"; 
+
 // ID Grup Notifikasi Admin
 let NOTIF_GROUP_ID = "120363430688539207@g.us"; 
 
@@ -68,12 +71,27 @@ async function startBot() {
 
   currentSock = sock;
 
+  // JIKA BELUM LOGIN, GUNAKAN PAIRING CODE BUKAN QR CODE
+  if (BOT_PHONE_NUMBER && !sock.authState.creds.registered) {
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
+        console.log(`\n=========================================`);
+        console.log(`🔑 KODE PAIRING WHATSAPP ANDA: ${code}`);
+        console.log(`=========================================\n`);
+      } catch (err) {
+        console.error("Gagal meminta kode pairing:", err);
+      }
+    }, 4000); // Beri jeda 4 detik agar koneksi siap
+  }
+
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    // Tampilkan QR code jika pairing code tidak disetel
+    if (qr && !BOT_PHONE_NUMBER) {
       console.log("\n[SCAN QR CODE INI MENGGUNAKAN WHATSAPP]\n");
       qrcode.generate(qr, { small: true });
     }
