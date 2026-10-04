@@ -24,6 +24,7 @@ let NOTIF_GROUP_ID = "120363430688539207@g.us";
 
 // Penyimpanan pesanan sementara per user
 const activeOrders = new Map();
+const lastOrders = new Map();
 
 let isReconnecting = false;
 let currentSock = null;
@@ -195,24 +196,87 @@ Silakan lakukan pembayaran ke salah satu opsi di bawah ini:
     const command = rawBody.trim().toLowerCase();
 
     // ==========================================
-    // 1. PERINTAH KHUSUS ADMIN (DONE / PROSES)
+    // 1. PERINTAH ADMIN (DONE / PROSES OTOMATIS BEDA SOSMED & CAPCUT)
     // ==========================================
     if (
-      command === "done" || 
-      command === ".done" || 
-      command === "!done" || 
-      command === "proses" || 
-      command === ".proses"
+      command.startsWith("done") || 
+      command.startsWith(".done") || 
+      command.startsWith("!done") ||
+      command.startsWith("proses") ||
+      command.startsWith(".proses")
     ) {
       const contextInfo = msg.message.extendedTextMessage?.contextInfo;
       const targetParticipant = contextInfo?.participant;
-      const targetTag = targetParticipant ? `@${targetParticipant.replace(/[^0-9]/g, "")} ` : "";
+      const targetTag = targetParticipant ? `@${targetParticipant.replace(/[^0-9]/g, "")}` : "Kak";
 
-      const textProses = 
+      // Catatan manual dari admin jika ada (misal: "done capcut 1 bl")
+      const customNote = rawBody.replace(/^(done|\.done|!done|proses|\.proses)/i, "").trim();
+
+      // Cek riwayat order pembeli yang di-reply
+      const previousOrder = targetParticipant 
+        ? (activeOrders.get(targetParticipant) || lastOrders.get(targetParticipant) || lastOrders.get(targetParticipant.replace(/[^0-9]/g, "")))
+        : null;
+      const rawOrderText = previousOrder ? previousOrder.text.toLowerCase() : "";
+      const noteLower = customNote.toLowerCase();
+
+      // Deteksi apakah ini pesanan CapCut
+      const isCapcut = noteLower.includes("capcut") || rawOrderText.includes("capcut");
+
+      // JIKA CAPCUT -> BALAS FORMAT NOTA SELESAI
+      if (isCapcut) {
+        const now = new Date();
+        const jamStr = now.toLocaleTimeString("id-ID", { 
+          timeZone: "Asia/Jakarta", 
+          hour: "2-digit", 
+          minute: "2-digit", 
+          second: "2-digit" 
+        }).replace(/\./g, ":") + " WIB";
+
+        const tglStr = now.toLocaleDateString("id-ID", { 
+          timeZone: "Asia/Jakarta", 
+          day: "numeric", 
+          month: "long", 
+          year: "numeric" 
+        });
+
+        let groupName = "PAKAINI STORE";
+        if (isGroup) {
+          try {
+            const groupMeta = await sock.groupMetadata(from);
+            groupName = groupMeta.subject || groupName;
+          } catch (e) {
+            groupName = "PAKAINI STORE";
+          }
+        }
+
+        const catatanFinal = customNote || (previousOrder ? previousOrder.layanan : "CapCut Premium Privat");
+
+        const textDoneCapcut = 
+`*TRANSAKSI BERHASIL* 「✅」
+
+
+⏰ Jam      : ${jamStr}
+📅 Tanggal  : ${tglStr}
+📁 Grup     : ${groupName}
+📝 Catatan  : ${catatanFinal}
+
+
+${targetTag} _Terima kasih sudah order!_`;
+
+        await sock.sendMessage(from, {
+          text: textDoneCapcut,
+          mentions: targetParticipant ? [targetParticipant] : []
+        }, { quoted: msg });
+
+        return;
+      }
+
+      // JIKA FOLLOWERS / SOSMED -> BALAS FORMAT ESTIMASI PENGERJAAN
+      const textProsesSosmed = 
 `✅ *PAYMENT ACCEPTED — ORDER ON PROGRESS!*
-Pembayaran sukses kami terima. Pesanan ${targetTag}sedang langsung dikerjakan oleh tim teknis *${BOT_NAME}*.
+Pembayaran sukses kami terima. Pesanan ${targetTag} sedang langsung dikerjakan oleh tim teknis *${BOT_NAME}*.
 
-⏱️ *Estimasi:* Mulai naik dalam *4 jam s/d maksimal 48 jam* tergantung kepadatan server. Tenang kak, sistem kami buat bertahap biar interaksi akun kamu tetap aman dan alami!
+⏱️️ *Estimasi:* Mulai naik dalam *4 jam s/d maksimal 48 jam* tergantung kepadatan server. Tenang kak, sistem kami buat bertahap biar interaksi akun kamu tetap aman dan alami!
 
 ⚠️ *Catatan Penting:*
 • *Dilarang menumpuk order* ke target yang sama sebelum proses ini selesai.
@@ -221,11 +285,10 @@ Pembayaran sukses kami terima. Pesanan ${targetTag}sedang langsung dikerjakan ol
 Mohon bersabar dan tunggu proses pengerjaan sampai selesai. Jangan mengirim chat spam atau menanyakan berulang kali karena setiap pesanan diproses otomatis sesuai nomor antrean sistem. Terima kasih atas pengertian dan kerja samanya! 🚀`;
 
       await sock.sendMessage(from, {
-        text: textProses,
+        text: textProsesSosmed,
         mentions: targetParticipant ? [targetParticipant] : []
       }, { quoted: msg });
-      
-      console.log(`[ADMIN] Perintah ${command} berhasil dieksekusi di ${from}`);
+
       return;
     }
 
@@ -302,28 +365,31 @@ ${userOrder.text}
     }
 
     // ==========================================
-    // 3. DETEKSI FORMAT PEMESANAN
+    // 3. DETEKSI FORMAT PEMESANAN OTOMATIS
     // ==========================================
-    const matchTarget = rawBody.match(/target\s*:\s*([^\n\r]+)/i);
-    const targetValue = matchTarget ? matchTarget[1].replace(/⚠️️?.*/g, "").trim() : "";
-    const isTargetFilled = targetValue.length > 2 && !targetValue.startsWith("(") && targetValue.toLowerCase() !== "username";
     const bodyLower = rawBody.toLowerCase();
+    if (bodyLower.includes("layanan:") && (bodyLower.includes("target:") || bodyLower.includes("jumlah:"))) {
+      // Ambil nama layanan untuk riwayat
+      const matchLayanan = rawBody.match(/layanan\s*:\s*([^\n\r]+)/i);
+      const namaLayanan = matchLayanan ? matchLayanan[1].trim() : "Layanan Sosmed";
 
-    if (bodyLower.includes("layanan:") && bodyLower.includes("target:") && isTargetFilled) {
       const orderData = {
         text: rawBody.trim(),
+        layanan: namaLayanan,
         time: new Date().toLocaleTimeString("id-ID")
       };
 
       activeOrders.set(sender, orderData);
       activeOrders.set(rawNumber, orderData);
+      lastOrders.set(sender, orderData);
+      lastOrders.set(rawNumber, orderData);
 
       console.log(`[Order Masuk] Format terisi dari +${rawNumber}. Mengirim konfirmasi & pembayaran...`);
 
       const headerKonfirmasi = 
 `✅ *PESANAN DITERIMA!*
-Halo @${rawNumber}, format pesanan Anda sudah tercatat di sistem kami.
-Silakan selesaikan pembayaran:
+Halo @${rawNumber}, format pemesanan Anda sudah tercatat di sistem kami.
+Silakan selesaikan pembayaran berikut:
 
 `;
       await kirimPembayaran(from, msg, headerKonfirmasi);
@@ -336,16 +402,44 @@ Silakan selesaikan pembayaran:
     if (command === "menu" || command === ".menu" || command === "!menu") {
       const textMenu = 
 `⚡ *SELAMAT DATANG DI ${BOT_NAME}* ⚡
-Pusat kebutuhan sosial media cepat, aman & terpercaya!
+Pusat kebutuhan sosial media & akun premium terpercaya!
 
 *Daftar Perintah:*
-👉 *list* : Cek seluruh daftar harga / pricelist
+👉 *list* : Cek seluruh daftar harga / pricelist lengkap
+👉 *capcut* : Cek pricelist & info CapCut Pro
 👉 *order* : Format pemesanan layanan
 👉 *bayar* : Info DANA, GoPay & Barcode QRIS
 👉 *admin* : Kontak admin langsung
 
 _Ketik salah satu kata perintah di atas untuk melanjutkan._`;
       await sock.sendMessage(from, { text: textMenu }, { quoted: msg });
+    }
+
+    // ==========================================
+    // PERINTAH KHUSUS CAPCUT (HARGA TERBARU)
+    // ==========================================
+    else if (
+      command === "capcut" || 
+      command === ".capcut" || 
+      command === "!capcut"
+    ) {
+      const textCapcut = 
+`🎬 *PRICELIST CAPCUT PRO PRIVAT — ${BOT_NAME}* 🎬
+
+Nikmati fitur pro tanpa watermark, ekspor 4K/60fps, transisi & filter premium! Akun disiapkan langsung oleh admin (tinggal login & pakai).
+
+*Pilihan Paket:*
+• *CapCut 7 Hari*   : Rp10.000
+• *CapCut 1 Bulan*  : Rp35.000
+• *CapCut 1 Tahun*  : Rp400.000
+
+✨ *Keunggulan & Sistem Akun:*
+✅ Akun Privat (bukan sharing ramai-ramai)
+✅ Sistem siap pakai (Email & Password akun pro diberikan oleh admin setelah bayar)
+✅ Bergaransi penuh sesuai durasi
+
+_Untuk memesan, silakan ketik *order*_`;
+      await sock.sendMessage(from, { text: textCapcut }, { quoted: msg });
     }
 
     else if (
@@ -359,63 +453,165 @@ _Ketik salah satu kata perintah di atas untuk melanjutkan._`;
       const textPrice = 
 `📋 *PRICELIST LAYANAN ${BOT_NAME}* 📋
 
-*INSTAGRAM FOLLOWERS INDO*
-• 300 Folls : Rp31.000
-• 500 Folls : Rp39.000
-• 1.000 Folls : Rp68.000
+━━━━━━━━━━━━━━━━━━━━━
+📸 *INSTAGRAM FOLLOWERS & LIKES*
+━━━━━━━━━━━━━━━━━━━━━
+*Followers Indo (Garansi 30H)*
+• 300 Folls : Rp35.000
+• 500 Folls : Rp45.000
+• 1.000 Folls : Rp80.000
+• 5.000 Folls : Rp250.000
 
-*INSTAGRAM FOLLOWERS BULE*
-• 100 Folls : Rp6.000
-• 300 Folls : Rp9.000
-• 500 Folls : Rp12.000
-• 1.000 Folls : Rp18.000
+*Followers Bule (No Garansi)*
+• 100 Folls : Rp5.000
+• 300 Folls : Rp12.000
+• 500 Folls : Rp20.000
+• 1.000 Folls : Rp35.000
 
-*INSTAGRAM LIKES & VIEWS*
-• 300 - 5.000 Likes : Rp8.000 - Rp31.000
-• 5.000 - 50.000 Views : Rp7.000 - Rp21.000
+*Likes Asli*
+• 300 Likes : Rp20.000
+• 500 Likes : Rp35.000
+• 1.000 Likes : Rp60.000
+• 5.000 Likes : Rp250.000
 
-*TIKTOK FOLLOWERS*
-• 300 Folls : Rp21.000
-• 500 Folls : Rp28.000
-• 700 Folls : Rp34.000
-• 1.000 Folls : Rp39.000
+*Likes Murah*
+• 300 Likes : Rp7.000
+• 500 Likes : Rp10.000
+• 1.000 Likes : Rp15.000
+• 5.000 Likes : Rp30.000
 
-*TIKTOK LIKES / VIEWS / PAKET FYP*
-• 200 - 5.000 Likes : Rp6.000 - Rp31.000
-• 5.000 - 70.000 Views : Rp8.000 - Rp26.000
-• Paket FYP (Likes+Views) : Mulai Rp9.000
+*Views Murah*
+• 5.000 Views : Rp6.000
+• 10.000 Views : Rp8.000
+• 15.000 Views : Rp10.000
+• 25.000 Views : Rp15.000
+• 50.000 Views : Rp20.000
 
-*YOUTUBE SUBS & VIEWS*
-• 100 - 1.000 Subs : Rp9.000 - Rp35.000
-• 100 - 600 Views : Rp7.000 - Rp17.000
+━━━━━━━━━━━━━━━━━━━━━
+🎵 *TIKTOK SERVICES*
+━━━━━━━━━━━━━━━━━━━━━
+*Followers Indo (Garansi 30H)*
+• 300 Folls : Rp20.000
+• 500 Folls : Rp80.000
+• 700 Folls : Rp120.000
+• 1.000 Folls : Rp150.000
 
-*SHOPEE & TELEGRAM*
-• Shopee 100-500 Folls : Rp11.000 - Rp31.000
-• Telegram Member Indo : Mulai Rp16.000
-• Telegram Member Bule : Mulai Rp9.000
-• Telegram Views : Mulai Rp7.000
+*Followers Bule (Garansi 7H)*
+• 300 Folls : Rp20.000
+• 500 Folls : Rp27.000
+• 700 Folls : Rp33.000
+• 1.000 Folls : Rp38.000
 
-_Untuk pesan, silakan ketik *order*_`;
+*Likes Murah*
+• 200 Likes : Rp5.000
+• 500 Likes : Rp10.000
+• 1.000 Likes : Rp15.000
+• 5.000 Likes : Rp30.000
+
+*Views Murah*
+• 5.000 Views : Rp7.000
+• 10.000 Views : Rp9.000
+• 30.000 Views : Rp13.000
+• 50.000 Views : Rp18.000
+• 70.000 Views : Rp25.000
+
+*Paket FYP (Likes + Views)*
+• 200 Like + 5k Views : Rp10.000
+• 500 Like + 10k Views : Rp20.000
+• 1.000 Like + 15k Views : Rp25.000
+• 1.000 Like + 20k Views : Rp30.000
+
+━━━━━━━━━━━━━━━━━━━━━
+▶️ *YOUTUBE SERVICES*
+━━━━━━━━━━━━━━━━━━━━━
+*Subscribe Asli (Garansi 30H)*
+• 100 Subs : Rp75.000
+• 200 Subs : Rp150.000
+• 300 Subs : Rp215.000
+• 400 Subs : Rp285.000
+• 500 Subs : Rp350.000
+• 700 Subs : Rp500.000
+• 900 Subs : Rp620.000
+• 1.000 Subs : Rp650.000
+
+*Subscribe (No Garansi / No Complain)*
+• 100 Subs : Rp20.000
+• 200 Subs : Rp35.000
+• 300 Subs : Rp55.000
+• 400 Subs : Rp75.000
+• 500 Subs : Rp95.000
+• 700 Subs : Rp120.000
+• 900 Subs : Rp150.000
+• 1.000 Subs : Rp180.000
+
+*Views YouTube*
+• 100 Views : Rp6.000
+• 200 Views : Rp8.000
+• 300 Views : Rp10.000
+• 400 Views : Rp12.000
+• 500 Views : Rp14.000
+• 600 Views : Rp16.000
+
+━━━━━━━━━━━━━━━━━━━━━
+🛍️ *SHOPEE FOLLOWERS INDO*
+━━━━━━━━━━━━━━━━━━━━━
+• 100 Folls : Rp15.000
+• 200 Folls : Rp20.000
+• 300 Folls : Rp25.000
+• 400 Folls : Rp30.000
+• 500 Folls : Rp35.000
+
+━━━━━━━━━━━━━━━━━━━━━
+🎬 *APLIKASI PREMIUM*
+━━━━━━━━━━━━━━━━━━━━━
+*CapCut Premium Privat (Full Garansi)*
+• CapCut 7 Hari  : Rp10.000
+• CapCut 1 Bulan : Rp35.000
+• CapCut 1 Tahun : Rp400.000
+_(Ketik *capcut* untuk info rinciannya)_
+
+_Untuk memesan, silakan ketik *order*_`;
       await sock.sendMessage(from, { text: textPrice }, { quoted: msg });
     }
 
-    else if (command === "order" || command === ".order" || command === "!order") {
+    // ==========================================
+    // PERINTAH ORDER (KEMBALI KE FORMAT RESMI)
+    // ==========================================
+    else if (
+      command === "order" || 
+      command === ".order" || 
+      command === "!order"
+    ) {
       const textOrder = 
 `📝 *FORMAT PEMESANAN ${BOT_NAME}*
 
 Silakan salin format di bawah ini, lengkapi data, lalu kirim kembali:
 
 *Form Pemesanan:*
-• Layanan: 
-• Jumlah: 
-• Target: 
-• Pembayaran: 
+• Layanan: IG Followers Indo
+• Jumlah: 500
+• Target: https://www.instagram.com/username
+• Pembayaran: QRIS
 
-⚠️ *Perhatian:* Akun target *DILARANG DIPRIVAT* selama proses pesanan berjalan!`;
+⚠️ *Perhatian:* 
+• Akun target *DILARANG DIPRIVAT* selama proses pesanan berjalan!
+• Untuk order *CapCut*, bagian target cukup diisi tanda strip *(-) / Akun Baru*.
+👉 Ketik *pay* untuk melihat rincian nomor pembayaran & QRIS.`;
+
       await sock.sendMessage(from, { text: textOrder }, { quoted: msg });
     }
 
-    else if (command === "bayar" || command === ".bayar" || command === "!bayar") {
+    // ==========================================
+    // TAMBAHAN PERINTAH BAYAR / PAY
+    // ==========================================
+    else if (
+      command === "bayar" || 
+      command === ".bayar" || 
+      command === "!bayar" || 
+      command === "pay" || 
+      command === ".pay" || 
+      command === "!pay"
+    ) {
       await kirimPembayaran(from, msg);
     }
 
