@@ -386,13 +386,28 @@ ${userOrder.text}
     }
 
     // ==========================================
-    // 3. DETEKSI FORMAT PEMESANAN OTOMATIS
+    // DETEKSI FORMAT PEMESANAN OTOMATIS
     // ==========================================
     const bodyLower = rawBody.toLowerCase();
-    if (bodyLower.includes("layanan:") && (bodyLower.includes("target:") || bodyLower.includes("jumlah:"))) {
-      // Ambil nama layanan untuk riwayat
-      const matchLayanan = rawBody.match(/layanan\s*:\s*([^\n\r]+)/i);
-      const namaLayanan = matchLayanan ? matchLayanan[1].trim() : "Layanan Sosmed";
+    
+    // Deteksi Order Sosmed (mengandung layanan: & target:)
+    // ATAU Order CapCut (mengandung paket: & durasi:)
+    const isOrderSosmed = bodyLower.includes("layanan:") && bodyLower.includes("target:");
+    const isOrderPremium = bodyLower.includes("paket:") && bodyLower.includes("durasi:");
+
+    if (isOrderSosmed || isOrderPremium) {
+      let namaLayanan = "Layanan Pemesanan";
+      
+      if (isOrderSosmed) {
+        const matchLayanan = rawBody.match(/layanan\s*:\s*([^\n\r]+)/i);
+        namaLayanan = matchLayanan ? matchLayanan[1].trim() : "Layanan Sosmed";
+      } else if (isOrderPremium) {
+        const matchPaket = rawBody.match(/paket\s*:\s*([^\n\r]+)/i);
+        const matchDurasi = rawBody.match(/durasi\s*:\s*([^\n\r]+)/i);
+        const paketVal = matchPaket ? matchPaket[1].trim() : "CapCut";
+        const durasiVal = matchDurasi ? matchDurasi[1].trim() : "";
+        namaLayanan = `${paketVal} ${durasiVal}`.trim();
+      }
 
       const orderData = {
         text: rawBody.trim(),
@@ -405,12 +420,12 @@ ${userOrder.text}
       lastOrders.set(sender, orderData);
       lastOrders.set(rawNumber, orderData);
 
-      console.log(`[Order Masuk] Format terisi dari +${rawNumber}. Mengirim konfirmasi & pembayaran...`);
+      console.log(`[Order Masuk] Format terisi dari +${rawNumber} (${namaLayanan}). Mengirim konfirmasi & pembayaran...`);
 
       const headerKonfirmasi = 
-`✅ *PESANAN DITERIMA!*
-Halo @${rawNumber}, format pemesanan Anda sudah tercatat di sistem kami.
-Silakan selesaikan pembayaran berikut:
+`✅ *PESANAN DITERIMA & DICATAT!*
+Halo @${rawNumber}, data pesanan Anda telah masuk ke sistem.
+Segera selesaikan pembayaran agar pesanan langsung masuk antrean:
 
 `;
       await kirimPembayaran(from, msg, headerKonfirmasi);
@@ -596,7 +611,7 @@ _Untuk memesan, silakan ketik *order*_`;
     }
 
     // ==========================================
-    // PERINTAH ORDER (KEMBALI KE FORMAT RESMI)
+    // PERINTAH ORDER
     // ==========================================
     else if (
       command === "order" || 
@@ -606,18 +621,31 @@ _Untuk memesan, silakan ketik *order*_`;
       const textOrder = 
 `📝 *FORMAT PEMESANAN ${BOT_NAME}*
 
-Silakan salin format di bawah ini, lengkapi data, lalu kirim kembali:
+Silakan pilih & salin salah satu format di bawah ini, isi data dengan benar, lalu kirim kembali ke grup:
 
-*Form Pemesanan:*
-• Layanan: IG Followers Indo
-• Jumlah: 500
-• Target: https://www.instagram.com/username
-• Pembayaran: QRIS
+━━━━━━━━━━━━━━━━━━━━━
+📌 *1. FORMAT SOSIAL MEDIA (Followers / Likes / Views)*
+━━━━━━━━━━━━━━━━━━━━━
+• Layanan: 
+• Jumlah: 
+• Target: 
+• Pembayaran: 
 
-⚠️ *Perhatian:* 
-• Akun target *DILARANG DIPRIVAT* selama proses pesanan berjalan!
-• Untuk order *CapCut*, bagian target cukup diisi tanda strip *(-) / Akun Baru*.
-👉 Ketik *pay* untuk melihat rincian nomor pembayaran & QRIS.`;
+⚠️ *DILARANG KERAS:* Akun target diprivat atau ganti username selama proses pengerjaan! Kesalahan data target di luar tanggung jawab kami.
+
+━━━━━━━━━━━━━━━━━━━━━
+📌 *2. FORMAT APLIKASI PREMIUM (CapCut Pro)*
+━━━━━━━━━━━━━━━━━━━━━
+• Paket: 
+• Durasi: 
+• Pembayaran: 
+
+✨ *Catatan:* Data login akun privat (Email & Sandi) akan dikirimkan langsung oleh admin setelah verifikasi pembayaran.
+━━━━━━━━━━━━━━━━━━━━━
+
+⛔ *PERHATIAN:*
+Pesanan TIDAK AKAN DIPROSES sebelum pembayaran selesai!
+Ketik *pay* sekarang untuk mendapatkan rincian nomor rekening, e-wallet, dan barcode QRIS resmi.`;
 
       await sock.sendMessage(from, { text: textOrder }, { quoted: msg });
     }
