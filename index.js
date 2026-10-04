@@ -247,7 +247,19 @@ Silakan lakukan pembayaran ke salah satu opsi di bawah ini:
     const command = rawBody.trim().toLowerCase();
 
     // ==========================================
-    // 1. PERINTAH ADMIN (DONE / PROSES OTOMATIS BEDA SOSMED & CAPCUT)
+    // 1. CEK BLACKLIST (JIKA USER SUDAH DI-BLACKLIST)
+    // ==========================================
+    if (blacklistNumbers.has(sender) || blacklistNumbers.has(rawNumber)) {
+      if (isGroup) {
+        try {
+          await sock.groupParticipantsUpdate(from, [sender], "remove");
+        } catch (e) {}
+      }
+      return;
+    }
+
+    // ==========================================
+    // 2. LOGIKA PERINTAH DONE (PROTEKSI KHUSUS ADMIN)
     // ==========================================
     if (
       command.startsWith("done") || 
@@ -256,24 +268,81 @@ Silakan lakukan pembayaran ke salah satu opsi di bawah ini:
       command.startsWith("proses") ||
       command.startsWith(".proses")
     ) {
+      // Periksa apakah pengirim benar-benar Admin
+      const isAdmin = await isSenderAdmin(sock, from, sender);
+
+      // JIKA BUKAN ADMIN (ANGGOTA BIASA MENGETIK DONE)
+      if (!isAdmin) {
+        const count = (doneViolations.get(sender) || doneViolations.get(rawNumber) || 0) + 1;
+        doneViolations.set(sender, count);
+        doneViolations.set(rawNumber, count);
+
+        // Jika sudah 3x melanggar: Kick dan Blacklist
+        if (count >= 3) {
+          blacklistNumbers.add(sender);
+          blacklistNumbers.add(rawNumber);
+
+          const kickMsg = 
+`🚫 *AKSES DITOLAK & SANKSI BLACKLIST!*
+
+@${rawNumber} telah melanggar aturan sebanyak 3 kali (mengetik perintah khusus admin).
+
+Sesuai peraturan grup:
+❌ *Nomor Anda resmi DIKELUARKAN dan masuk BLACKLIST PERMANEN!*`;
+
+          await sock.sendMessage(from, {
+            text: kickMsg,
+            mentions: [sender]
+          }, { quoted: msg });
+
+          if (isGroup) {
+            try {
+              // Bot otomatis mengeluarkan pelanggar dari grup
+              await sock.groupParticipantsUpdate(from, [sender], "remove");
+              console.log(`[BLACKLIST] Berhasil mengeluarkan @${rawNumber} dari grup.`);
+            } catch (err) {
+              console.error("Gagal mengeluarkan anggota (pastikan bot dijadikan admin grup):", err);
+            }
+          }
+          return;
+        }
+
+        // Peringatan ke-1 dan ke-2
+        const warningMsg = 
+`⚠️ *PERINGATAN KERAS / SANKSI PELANGGARAN!* ⚠️
+
+Halo @${rawNumber}, perintah *DONE* hanya boleh digunakan oleh *ADMIN RESMI PAKAINI STORE*!
+
+⛔ *ATURAN TEGAS:*
+• Pelanggaran Anda saat ini: *Peringatan ke-${count} dari 3*
+• Jika Anda mengulanginya lagi, Anda akan dikenakan *DENDA RP50.000*!
+• Jika melanggar hingga *3 KALI*, Anda akan langsung *DIKELUARKAN DARI GRUP & DIBLACKLIST PERMANEN*!`;
+
+        await sock.sendMessage(from, {
+          text: warningMsg,
+          mentions: [sender]
+        }, { quoted: msg });
+
+        return;
+      }
+
+      // ========================================================
+      // JIKA VALID ADMIN: JALANKAN LOGIKA DONE SEPERTI BIASA
+      // ========================================================
       const contextInfo = msg.message.extendedTextMessage?.contextInfo;
       const targetParticipant = contextInfo?.participant;
       const targetTag = targetParticipant ? `@${targetParticipant.replace(/[^0-9]/g, "")}` : "Kak";
 
-      // Catatan manual dari admin jika ada (misal: "done capcut 1 bl")
       const customNote = rawBody.replace(/^(done|\.done|!done|proses|\.proses)/i, "").trim();
-
-      // Cek riwayat order pembeli yang di-reply
       const previousOrder = targetParticipant 
         ? (activeOrders.get(targetParticipant) || lastOrders.get(targetParticipant) || lastOrders.get(targetParticipant.replace(/[^0-9]/g, "")))
         : null;
       const rawOrderText = previousOrder ? previousOrder.text.toLowerCase() : "";
       const noteLower = customNote.toLowerCase();
 
-      // Deteksi apakah ini pesanan CapCut
+      // Cek apakah orderan CapCut
       const isCapcut = noteLower.includes("capcut") || rawOrderText.includes("capcut");
 
-      // JIKA CAPCUT -> BALAS FORMAT NOTA SELESAI
       if (isCapcut) {
         const now = new Date();
         const jamStr = now.toLocaleTimeString("id-ID", { 
@@ -322,7 +391,7 @@ ${targetTag} _Terima kasih sudah order!_`;
         return;
       }
 
-      // JIKA FOLLOWERS / SOSMED -> BALAS FORMAT ESTIMASI PENGERJAAN
+      // Balasan untuk followers / sosmed
       const textProsesSosmed = 
 `✅ *PAYMENT ACCEPTED — ORDER ON PROGRESS!*
 Pembayaran sukses kami terima. Pesanan ${targetTag} sedang langsung dikerjakan oleh tim teknis *${BOT_NAME}*.
