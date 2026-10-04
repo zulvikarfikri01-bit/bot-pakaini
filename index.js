@@ -33,6 +33,36 @@ let NOTIF_GROUP_ID = process.env.NOTIF_GROUP_ID || "120363430688539207@g.us";
 const activeOrders = new Map();
 const lastOrders = new Map();
 
+// ===================================================
+// SISTEM PELANGGARAN & BLACKLIST
+// ===================================================
+const doneViolations = new Map(); // Menghitung berapa kali melanggar
+const blacklistNumbers = new Set(); // Daftar nomor ter-blacklist
+
+// Fungsi pembantu mengecek status admin pengirim
+async function isSenderAdmin(sock, chatJid, senderJid) {
+  const cleanSender = senderJid.replace(/[^0-9]/g, "");
+  // 1. Cek apakah nomor pengirim adalah nomor pemilik/owner bot
+  if (cleanSender === ADMIN_CONTACT || cleanSender === EWALLET_NUMBER) {
+    return true;
+  }
+
+  // 2. Cek apakah pengirim berstatus Admin / Superadmin di grup tersebut
+  if (chatJid.endsWith("@g.us")) {
+    try {
+      const groupMeta = await sock.groupMetadata(chatJid);
+      const participant = groupMeta.participants.find(p => p.id === senderJid);
+      if (participant && (participant.admin === "admin" || participant.admin === "superadmin")) {
+        return true;
+      }
+    } catch (err) {
+      console.error("Gagal memeriksa status admin grup:", err);
+    }
+  }
+
+  return false;
+}
+
 let isReconnecting = false;
 let currentSock = null;
 
